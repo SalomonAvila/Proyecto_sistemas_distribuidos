@@ -1,0 +1,14 @@
+# Instala las bibliotecas de desarrollo
+sudo apt-get update
+sudo apt-get install libzmq3-dev
+
+# 3. Clona el repositorio de cppzmq
+cd ~
+git clone https://github.com/zeromq/cppzmq.git
+cd cppzmq
+
+# 4. Copia los headers a tu sistema
+sudo cp *.hpp /usr/local/include/
+
+En teoria, se asume se tiene ya estas dependencias instaladas
+
