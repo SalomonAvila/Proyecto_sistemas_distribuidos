@@ -1,1 +1,1 @@
-#Proyecto de distribuidos
+Proyecto_sistemas_distribuidos
