@@ -5,5 +5,7 @@
 	g++ src/actores/actorDevolucion.cpp -o build/ad -lzmq
 	g++ src/actores/actorRenovacion.cpp -o build/ar -lzmq
 	g++ src/ga/ga.cpp -o build/ga -lzmq -lpqxx -lpq
+	clear
 clean:
 	rm -rf build
+	clear

@@ -77,12 +77,12 @@ int main(int argc, char *argv[]){
             switch(int(req.requestType)){
                 case 0:
                     std::cerr<<"TO BE IMPLEMENTED\n";
-                    return;
+                    break;
                 case 1:
-                    //Funcion para renovar
+                    //Funcion para renovacion
                     break;
                 case 2:
-                    //Funcion para devolver
+                    //Funcion para devolucion
                     break;
             }
             

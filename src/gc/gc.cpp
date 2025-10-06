@@ -107,16 +107,22 @@ int main(int argc, char* argv[]){
         std::string response;
         std::string topic = "return";
         std::string message;
-
+        time_t ahora = time(nullptr);
+        time_t futuro = ahora + 7 * 24 * 60 * 60;
+        tm* fecha = localtime(&futuro);
+        std::string fechaFinal = "dia " + std::to_string(fecha->tm_mday) + " del mes " + std::to_string(fecha->tm_mon + 1);
         switch(tipo){
             case 0:
                 response = "To be implemented later\n";
                 socketOne.send(zmq::buffer(response), zmq::send_flags::none);
                 break;
             case 1:
-                sendAsyncGcRequest(topic,req,socketFour);
+                topic = "renewal";
+                sendAsyncGcRequest(topic,req,socketThree);
+                socketOne.send(zmq::buffer(fechaFinal), zmq::send_flags::none);
                 break;
             case 2:
+                topic = "return";
                 reply = "Solicitud procesada correctamente";
                 sendAsyncGcRequest(topic,req,socketFour);
                 socketOne.send(zmq::buffer(reply), zmq::send_flags::none);

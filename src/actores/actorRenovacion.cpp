@@ -67,12 +67,12 @@ int main(int argc, char* argv[]){
         }
         Request req;
         memcpy(&req, message.data(), sizeof(Request));
-        /*
+        
         std::cout << "Solicitud recibida:\n";
         std::cout << " - Tipo: " << int(req.requestType) << "\n";
         std::cout << " - Código libro: " << req.code << "\n";
         std::cout << " - Sede: " << int(req.location) << "\n";
-        */
+        
         socketTwo.send(message,zmq::send_flags::none);
         std::string response = receiveGcResponse(socketTwo);
     }
