@@ -116,8 +116,8 @@ int main(int argc, char *argv[]){
         std::cerr<<"Run format is ./[fileName] [#Location]";
         return 0;
     }
-
-    if(loc == 0){
+    std::cout<<"Loc = "<<int(loc)<<"\n";
+    if(int(loc) == 0){
         zmq::context_t context(1);
         zmq::socket_t socketOne(context,zmq::socket_type::rep);
         std::string completeSocketDir = "tcp://";
@@ -150,7 +150,6 @@ int main(int argc, char *argv[]){
             
             try{
                 std::string conect = "dbname=root user=root password=root host=localhost port=5434";
-                std::cout<<"Conexion es: "<<conect<<"\n";
                 pqxx::connection C(conect);
                 std::int8_t locat = req.location;
                 locat++;
@@ -162,12 +161,20 @@ int main(int argc, char *argv[]){
                     case 1:
                         std::cout<<"Opcion de renovar\n";
                         reply = renewBook(req.code,req.location,C);
+                        std::cout<<"\n\nRespuesta: "<<reply<<"\n\n";
+                        sendAsyncGaRequest("replica",req,socketTwo);
+                        std::cout<<"Mensaje enviado a la replica\n";
                         socketOne.send(zmq::buffer(reply), zmq::send_flags::none);
+                        std::cout<<"Devuelto al request socket\n";
                         break;
                     case 2:
                         std::cout<<"Opcion de devolver\n";
                         reply = returnBook(req.code,req.location,C);
+                        std::cout<<"\n\nRespuesta: "<<reply<<"\n\n";
+                        sendAsyncGaRequest("replica",req,socketTwo);
+                        std::cout<<"Mensaje enviado a la replica\n";
                         socketOne.send(zmq::buffer(reply), zmq::send_flags::none);
+                        std::cout<<"Devuelto al request socket\n";
                         break;
                 }
                 
@@ -181,7 +188,7 @@ int main(int argc, char *argv[]){
         zmq::context_t context(1);
         zmq::socket_t socketOne(context, zmq::socket_type::sub);
         std::string completeSocketDir = "tcp://";
-        completeSocketDir.append(directionsPool[loc]);
+        completeSocketDir.append(directionsPool[0]);
         completeSocketDir.append(":5561"); 
         socketOne.connect(completeSocketDir);
         std::string topic = "replica";
