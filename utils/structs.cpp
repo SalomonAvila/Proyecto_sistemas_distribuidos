@@ -1,34 +1,17 @@
 #include <iostream>
-using namespace std;
-
-
-
-struct Solicitud{
-    TipoSolicitud tipo;
-    int32_t codigo;
-    
-};
+#include <cstdint>
 
 
 //ENUMERACIONES
-enum struct TipoSolicitud{
-    PRESTAMO,
-    RENOVACION,
-    DEVOLUCION
+enum struct RequestType{
+    LOAN,
+    RENEWAL,
+    RETURN
 };
 
-enum struct EstadoPrestamo{
-    ACTIVO,
-    VENCIDO,
-    CERRADO
-};
 
-enum struct Rol{
-    ESTUDIANTE,
-    PROFESOR
-};
-
-enum struct Sede{
-    UNO,
-    DOS
+struct Request{
+    RequestType requestType;
+    std::int32_t code;
+    std::int8_t location;
 };

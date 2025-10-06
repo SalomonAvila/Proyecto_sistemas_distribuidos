@@ -2,7 +2,17 @@
 #include <iostream>
 #include <string>
 #include <cstdint>
-#include "utils/structs.cpp"
+#include <fstream>
+#include <vector>
+#include "../../utils/structs.cpp"
+
+void obtainEnvData(std::vector<std::string> &v){
+    std::fstream f("../.env");
+    std::string key,val;
+    while (std::getline(f, key, '=') && std::getline(f, val)) {
+        v.push_back(val);
+    }
+}
 
 void menu(){
     std::cout<<"\n\n\n";
@@ -11,66 +21,90 @@ void menu(){
     std::cout<<"1. Prestamo\n";
     std::cout<<"2. Renovacion\n";
     std::cout<<"3. Devolucion\n";
-    std::cout<<"4. Salir";
+    std::cout<<"4. Salir\n";
 }
 
-void sendPsRequest(const Solicitud& solicitud, zmq::socket_t socket){
-    zmq::message_t mensaje(sizeof(Solicitud));
-    memcpy(mensaje.data(),&solicitud,sizeof(Solicitud));
-    socket.send(mensaje,zmq::send_flags::none);
+void sendPsRequest(const Request& request, zmq::socket_t& socket){
+    zmq::message_t message(sizeof(Request));
+    memcpy(message.data(),&request,sizeof(Request));
+    socket.send(message,zmq::send_flags::none);
+    std::cout<<"Enviado\n";
 }
 
-void receivePsRequest(Solicitud solicitud, zmq::socket_t socket){
-    zmq::message_t mensaje;
-    socket.recv(mensaje,zmq::recv_flags::none);
+void receivePsResponse(zmq::socket_t& socket){
+    zmq::message_t response;
+    zmq::recv_result_t result = socket.recv(response,zmq::recv_flags::none);
+    if(!result){
+        std::cout<<"No succesful response from Gc\n";
+    }
+    std::string contenido((char *)(response.data()), response.size());
+    std::cout<<contenido<<"\n";
 }
 
 int main(int argc, char* argv[]){
-    std::string ip;
-    std::int8_t sede;
+    std::vector<std::string> directionsPool;
+    std::int8_t loc;
     if(argc == 1){
-        std::cout<<"No se puede establecer conexion si no se sabe la IP\n";
+        std::cerr<<"Cannot stablish conection without library location\n";
         return 0;
     }else if(argc == 2){
-         ip = argv[1];
+        obtainEnvData(directionsPool);
+         loc = std::int8_t(std::stoi(argv[1]));
+         loc--;
+         if(loc >= std::int8_t(directionsPool.size())){
+            std::cout<<"Location doesn't exist\n";
+            return 0;
+         }
     }else{
-        std::cout<<"El formato de entrada es: ./[nombreDelArchivo] [IP] [#DeSede]";
-        
+        std::cerr<<"Run format is ./[fileName] [#Location]";
+        return 0;
     }
 
-    //Creacion de la conexion
     zmq::context_t context(1);
     zmq::socket_t socket(context,zmq::socket_type::req);
     std::string completeSocketDir = "tcp://";
-    completeSocketDir.append(ip);
+    completeSocketDir.append(directionsPool[loc]);
     completeSocketDir.append(":5555");
     socket.connect(completeSocketDir);
 
 
     int opc;
-    menu();
-    std::cin>>opc;
-    while(opc != 4){
-        Solicitud prestamo;
+    while(true){
+        std::cout<<"Connect succesfully at: "<<completeSocketDir<<"\n";
+        menu();
+        std::cin>>opc;
+        Request request;
+        request.location = loc;
         switch(opc){
             case 1:
-                prestamo.tipo = TipoSolicitud::PRESTAMO;
-                std::cout<<"Ingrese el codigo del libro que desea: ";
-                std::cin>> prestamo.codigo;
+                request.requestType = RequestType::LOAN;
+                std::cout<<"Ingrese el codigo del libro que desea pedir prestado: ";
+                std::cin>> request.code;
+                sendPsRequest(request,socket);
+                receivePsResponse(socket);
                 break;
             case 2:
+                request.requestType = RequestType::RENEWAL;
+                std::cout<<"Ingrese el codigo del libro que desea renovar ";
+                std::cin>> request.code;
+                sendPsRequest(request,socket);
+                receivePsResponse(socket);
                 break;
             case 3:
+                request.requestType = RequestType::RETURN;
+                std::cout<<"Ingrese el codigo del libro que desea devolver ";
+                std::cin>> request.code;
+                sendPsRequest(request,socket);
+                receivePsResponse(socket);
                 break;
             case 4:
+                socket.disconnect(completeSocketDir);
+                socket.close();
+                return 0;
                 break;
         }
     }
-    
-
 }
-
-
 
 
 /*
