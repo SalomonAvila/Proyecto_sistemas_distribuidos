@@ -13,6 +13,13 @@ void obtainEnvData(std::vector<std::string> &v){
     }
 }
 
+void sendAsyncGaRequest(const std::string& topic, const Request& request, zmq::socket_t& socket){
+    socket.send(zmq::buffer(topic), zmq::send_flags::sndmore);
+    zmq::message_t message(sizeof(Request));
+    memcpy(message.data(),&request,sizeof(Request));
+    socket.send(message,zmq::send_flags::none);
+}
+
 std::string renewBook(int code, int location, pqxx::connection &C){
     int sede_real = location + 1;
     
@@ -110,59 +117,117 @@ int main(int argc, char *argv[]){
         return 0;
     }
 
+    if(loc == 0){
+        zmq::context_t context(1);
+        zmq::socket_t socketOne(context,zmq::socket_type::rep);
+        std::string completeSocketDir = "tcp://";
+        completeSocketDir.append(directionsPool[loc]);
+        completeSocketDir.append(":5560");
+        socketOne.bind(completeSocketDir);
 
-    zmq::context_t context(1);
-    zmq::socket_t socketOne(context,zmq::socket_type::rep);
-    std::string completeSocketDir = "tcp://";
-    completeSocketDir.append(directionsPool[loc]);
-    completeSocketDir.append(":5560");
-    socketOne.bind(completeSocketDir);
+        zmq::socket_t socketTwo(context,zmq::socket_type::pub);
+        completeSocketDir = "tcp://";
+        completeSocketDir.append(directionsPool[loc]);
+        completeSocketDir.append(":5561");
+        socketTwo.bind(completeSocketDir);
+    
+        while(true){
 
-    while(true){
-
-        zmq::message_t request;
-        zmq::recv_result_t result = socketOne.recv(request, zmq::recv_flags::none);
-        if(!result){
-            std::cerr<<"ERROR\n";
-            return 0;
-        }
-        Request req;
-        memcpy(&req, request.data(), sizeof(Request));
-        std::cout << "Solicitud recibida:\n";
-        std::cout << " - Tipo: " << int(req.requestType) << "\n";
-        std::cout << " - Código libro: " << req.code << "\n";
-        std::cout << " - Sede: " << int(req.location) << "\n";
-
-        std::string reply;
-        
-        try{
-            std::string conect = "dbname=root user=root password=root host=localhost port=5434";
-            std::cout<<"Conexion es: "<<conect<<"\n";
-            pqxx::connection C(conect);
-            std::int8_t locat = req.location;
-            locat++;
-            std::cout<<"El codigo es: "<<int(req.requestType)<<"\n";
-            switch(int(req.requestType)){
-                case 0:
-                    std::cerr<<"TO BE IMPLEMENTED\n";
-                    break;
-                case 1:
-                    std::cout<<"Opcion de renovar\n";
-                    reply = renewBook(req.code,req.location,C);
-                    socketOne.send(zmq::buffer(reply), zmq::send_flags::none);
-                    break;
-                case 2:
-                    std::cout<<"Opcion de devolver\n";
-                    reply = returnBook(req.code,req.location,C);
-                    socketOne.send(zmq::buffer(reply), zmq::send_flags::none);
-                    break;
+            zmq::message_t request;
+            zmq::recv_result_t result = socketOne.recv(request, zmq::recv_flags::none);
+            if(!result){
+                std::cerr<<"ERROR\n";
+                return 0;
             }
-            
-        } catch (const std::exception &e) {
-        std::cerr << "CONECTION ERROR";
-    }
+            Request req;
+            memcpy(&req, request.data(), sizeof(Request));
+            std::cout << "Solicitud recibida:\n";
+            std::cout << " - Tipo: " << int(req.requestType) << "\n";
+            std::cout << " - Código libro: " << req.code << "\n";
+            std::cout << " - Sede: " << int(req.location) << "\n";
 
+            std::string reply;
+            
+            try{
+                std::string conect = "dbname=root user=root password=root host=localhost port=5434";
+                std::cout<<"Conexion es: "<<conect<<"\n";
+                pqxx::connection C(conect);
+                std::int8_t locat = req.location;
+                locat++;
+                std::cout<<"El codigo es: "<<int(req.requestType)<<"\n";
+                switch(int(req.requestType)){
+                    case 0:
+                        std::cerr<<"TO BE IMPLEMENTED\n";
+                        break;
+                    case 1:
+                        std::cout<<"Opcion de renovar\n";
+                        reply = renewBook(req.code,req.location,C);
+                        socketOne.send(zmq::buffer(reply), zmq::send_flags::none);
+                        break;
+                    case 2:
+                        std::cout<<"Opcion de devolver\n";
+                        reply = returnBook(req.code,req.location,C);
+                        socketOne.send(zmq::buffer(reply), zmq::send_flags::none);
+                        break;
+                }
+                
+            } catch (const std::exception &e) {
+                std::cerr << "CONECTION ERROR";
+            }
+
+        }
+
+    }else if(loc == 1){
+        zmq::context_t context(1);
+        zmq::socket_t socketOne(context, zmq::socket_type::sub);
+        std::string completeSocketDir = "tcp://";
+        completeSocketDir.append(directionsPool[loc]);
+        completeSocketDir.append(":5561"); 
+        socketOne.connect(completeSocketDir);
+        std::string topic = "replica";
+        socketOne.set(zmq::sockopt::subscribe, topic);
+
+        while(true){
+            zmq::message_t topicMessage;
+            zmq::message_t message;
+            zmq::recv_result_t resultOne = socketOne.recv(topicMessage,zmq::recv_flags::none);
+            zmq::recv_result_t resultTwo =  socketOne.recv(message,zmq::recv_flags::none);
+            if(!resultOne || !resultTwo){
+                std::cerr<<"NO SE PUDO OBTENER ALGUNO DE LOS 2 MENSAJES\n";
+                return 0;
+            }
+            Request req;
+            memcpy(&req, message.data(), sizeof(Request));
+            std::string reply;
+            try{
+                std::string conect = "dbname=root user=root password=root host=localhost port=5434";
+                std::cout<<"Conexion es: "<<conect<<"\n";
+                pqxx::connection C(conect);
+                std::int8_t locat = req.location;
+                locat++;
+                std::cout<<"El codigo es: "<<int(req.requestType)<<"\n";
+                switch(int(req.requestType)){
+                    case 0:
+                        std::cerr<<"TO BE IMPLEMENTED\n";
+                        break;
+                    case 1:
+                        std::cout<<"Opcion de renovar\n";
+                        reply = renewBook(req.code,req.location,C);
+                        break;
+                    case 2:
+                        std::cout<<"Opcion de devolver\n";
+                        reply = returnBook(req.code,req.location,C);
+                        break;
+                }
+                
+            } catch (const std::exception &e) {
+                std::cerr << "CONECTION ERROR";
+            }
+        }
     }
+    
+
+    
 
 
 }
