@@ -122,10 +122,10 @@ int main(int argc, char* argv[]){
                 socketOne.send(zmq::buffer(fechaFinal), zmq::send_flags::none);
                 break;
             case 2:
+                socketOne.send(zmq::buffer(reply), zmq::send_flags::none);
                 topic = "return";
                 reply = "Solicitud procesada correctamente";
                 sendAsyncGcRequest(topic,req,socketFour);
-                socketOne.send(zmq::buffer(reply), zmq::send_flags::none);
                 break;
         }
     }
