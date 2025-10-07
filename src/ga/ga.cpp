@@ -6,6 +6,11 @@
 #include <stdexcept>
 #include "../../utils/structs.cpp"
 
+/**
+ * @brief Function to read data from the file containing the environment variables 
+ * 
+ * @param v for storing IP values
+ */
 void obtainEnvData(std::vector<std::string> &v){
     std::fstream f("../.env");
     std::string key, val;
@@ -14,6 +19,13 @@ void obtainEnvData(std::vector<std::string> &v){
     }
 }
 
+/**
+ * @brief Function for making the request to the respective GA [PUB-SUB]
+ * 
+ * @param topic Topic for the publisher to publish
+ * @param request Request structure that contains information
+ * @param socket socket passed by reference
+ */
 void sendAsyncGaRequest(const std::string &topic, const Request &request, zmq::socket_t &socket){
     socket.send(zmq::buffer(topic), zmq::send_flags::sndmore);
     zmq::message_t message(sizeof(Request));
@@ -21,6 +33,14 @@ void sendAsyncGaRequest(const std::string &topic, const Request &request, zmq::s
     socket.send(message, zmq::send_flags::none);
 }
 
+/**
+ * @brief Function to interact with PostgreSQL
+ * 
+ * @param code 
+ * @param location 
+ * @param C 
+ * @return std::string 
+ */
 std::string renewBook(int code, int location, pqxx::connection &C){
     int sede_real = location + 1;
     try{
@@ -35,13 +55,11 @@ std::string renewBook(int code, int location, pqxx::connection &C){
             " AND e.tipo_operacion = 'prestamo' "
             "ORDER BY e.fecha_operacion DESC "
             "LIMIT 1");
-        if (R.empty()){
-            return "No se puede ejecutar: préstamo no encontrado.";
-        }
+        if (R.empty()) return "Loan not found";
         int id_estado = R[0][0].as<int>();
         int renovaciones = R[0][1].as<int>();
         if (renovaciones >= 2){
-            return "No se puede renovar: se alcanzó el máximo de renovaciones.";
+            return "Max renovation limit reached (2)";
         }
         W.exec(
             "UPDATE estados "
@@ -50,13 +68,21 @@ std::string renewBook(int code, int location, pqxx::connection &C){
             "WHERE id_estado = " +
             std::to_string(id_estado));
         W.commit();
-        return "Préstamo renovado exitosamente.";
+        return "Loan successfully renewed";
     }
     catch (const std::exception &e){
         return std::string("Error: ") + e.what();
     }
 }
 
+/**
+ * @brief Function to interact with PostgreSQL
+ * 
+ * @param code 
+ * @param location 
+ * @param C 
+ * @return std::string 
+ */
 std::string returnBook(int codigo, int sede, pqxx::connection &C){
     int sede_real = sede + 1;
     pqxx::work W(C);
@@ -70,19 +96,45 @@ std::string returnBook(int codigo, int sede, pqxx::connection &C){
         " AND e.tipo_operacion != 'devuelto' "
         "ORDER BY e.fecha_operacion DESC "
         "LIMIT 1;");
-    std::cout << "Punto antes\n";
-    if (R.empty()) return "No se puede ejecutar: préstamo no encontrado.";
-    std::cout << "Punto 1\n";
+    if (R.empty()) return "Loan not found";
     int id_estado = R[0]["id_estado"].as<int>();
     int id_libro = R[0]["id_libro"].as<int>();
     W.exec("UPDATE estados SET tipo_operacion = 'devuelto' WHERE id_estado = " + std::to_string(id_estado) + ";");
     std::string columna = (sede == 1) ? "ejemplares_sede1" : "ejemplares_sede2";
     W.exec("UPDATE libros SET " + columna + " = " + columna + " + 1 WHERE id_libro = " + std::to_string(id_libro) + ";");
     W.commit();
-    std::cout << "Punto 2\n";
-    return "Préstamo devuelto exitosamente y ejemplares actualizados.";
+    return "Loan successfully repaid and copies updated";
 }
 
+/**
+ * @brief Print request information
+ * 
+ * @param request 
+ */
+void printRequestInformation(Request &request){
+    int typeRequest = int(request.requestType);
+    std::cout<<"\n\n";
+    std::cout<<"--------------------------";
+    std::cout << " - Type: ";
+    if(typeRequest == 0){
+        std::cout<<"LOAN\n";
+    }else if(typeRequest == 1){
+        std::cout<<"RENEWAL\n";
+    }else if(typeRequest == 2){
+        std::cout<<"RETURN\n";
+    }
+    std::cout << " - Book code: " << request.code << "\n";
+    std::cout << " - Location: " << int(request.location) << "\n";
+    std::cout<<"--------------------------";
+}
+
+/**
+ * @brief main function
+ * 
+ * @param argc 
+ * @param argv 
+ * @return int 
+ */
 int main(int argc, char *argv[]){
     std::vector<std::string> directionsPool;
     std::int8_t loc;
@@ -95,15 +147,14 @@ int main(int argc, char *argv[]){
         loc = std::int8_t(std::stoi(argv[1]));
         loc--;
         if (loc >= std::int8_t(directionsPool.size())){
-            std::cout << "No existe esta sede\n";
+            std::cout << "This location does not exist.\n";
             return 0;
         }
     }
     else{
-        std::cerr << "Run format is ./[fileName] [#Location]";
+        std::cerr<<"Run format is ./fileName #Location";
         return 0;
     }
-    std::cout << "Loc = " << int(loc) << "\n";
     if (int(loc) == 0){
         zmq::context_t context(1);
         zmq::socket_t socketOne(context, zmq::socket_type::rep);
@@ -127,38 +178,36 @@ int main(int argc, char *argv[]){
             }
             Request req;
             memcpy(&req, request.data(), sizeof(Request));
-            std::cout << "Solicitud recibida:\n";
-            std::cout << " - Tipo: " << int(req.requestType) << "\n";
-            std::cout << " - Código libro: " << req.code << "\n";
-            std::cout << " - Sede: " << int(req.location) << "\n";
+            
+            printRequestInformation(req);
+
             std::string reply;
             try{
                 std::string conect = "dbname=root user=root password=root host=localhost port=5434";
                 pqxx::connection C(conect);
                 std::int8_t locat = req.location;
                 locat++;
-                std::cout << "El codigo es: " << int(req.requestType) << "\n";
                 switch (int(req.requestType)){
                     case 0:
                         std::cerr << "TO BE IMPLEMENTED\n";
                         break;
                     case 1:
-                        std::cout << "Opcion de renovar\n";
+                        std::cout << "Option to renew\n";
                         reply = renewBook(req.code, req.location, C);
-                        std::cout << "\n\nRespuesta: " << reply << "\n\n";
+                        std::cout << "\n\nResponse: " << reply << "\n\n";
                         sendAsyncGaRequest("replica", req, socketTwo);
-                        std::cout << "Mensaje enviado a la replica\n";
+                        std::cout << "Message sent to the replica\n";
                         socketOne.send(zmq::buffer(reply), zmq::send_flags::none);
-                        std::cout << "Devuelto al request socket\n";
+                        std::cout << "Returned to the request socket\n";
                         break;
                     case 2:
-                        std::cout << "Opcion de devolver\n";
+                        std::cout << "Option to return\n";
                         reply = returnBook(req.code, req.location, C);
-                        std::cout << "\n\nRespuesta: " << reply << "\n\n";
+                        std::cout << "\n\nAnswer: " << reply << "\n\n";
                         sendAsyncGaRequest("replica", req, socketTwo);
-                        std::cout << "Mensaje enviado a la replica\n";
+                        std::cout << "Message sent to the replica\n";
                         socketOne.send(zmq::buffer(reply), zmq::send_flags::none);
-                        std::cout << "Devuelto al request socket\n";
+                        std::cout << "Returned to the request socket\n";
                         break;
                 }
             }
@@ -183,29 +232,30 @@ int main(int argc, char *argv[]){
             zmq::recv_result_t resultOne = socketOne.recv(topicMessage, zmq::recv_flags::none);
             zmq::recv_result_t resultTwo = socketOne.recv(message, zmq::recv_flags::none);
             if (!resultOne || !resultTwo){
-                std::cerr << "NO SE PUDO OBTENER ALGUNO DE LOS 2 MENSAJES\n";
+                std::cerr << "ONE OF THE TWO MESSAGES COULD NOT BE OBTAINED\n";
                 return 0;
             }
             Request req;
             memcpy(&req, message.data(), sizeof(Request));
+            printRequestInformation(req);
             std::string reply;
             try{
                 std::string conect = "dbname=root user=root password=root host=localhost port=5434";
-                std::cout << "Conexion es: " << conect << "\n";
+                std::cout << "Connection is: " << conect << "\n";
                 pqxx::connection C(conect);
                 std::int8_t locat = req.location;
                 locat++;
-                std::cout << "El codigo es: " << int(req.requestType) << "\n";
+                std::cout << "The code is: " << int(req.requestType) << "\n";
                 switch (int(req.requestType)){
                     case 0:
                         std::cerr << "TO BE IMPLEMENTED\n";
                         break;
                     case 1:
-                        std::cout << "Opcion de renovar\n";
+                        std::cout << "Option to renew\n";
                         reply = renewBook(req.code, req.location, C);
                         break;
                     case 2:
-                        std::cout << "Opcion de devolver\n";
+                        std::cout << "Option to return\n";
                         reply = returnBook(req.code, req.location, C);
                         break;
                 }
