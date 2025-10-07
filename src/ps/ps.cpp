@@ -7,6 +7,11 @@
 #include <vector>
 #include "../../utils/structs.cpp"
 
+/**
+ * @brief Function to read data from the file containing the environment variables 
+ * 
+ * @param v for storing IP values
+ */
 void obtainEnvData(std::vector<std::string> &v){
     std::fstream f("../.env");
     std::string key,val;
@@ -16,33 +21,56 @@ void obtainEnvData(std::vector<std::string> &v){
     f.close();
 }
 
+/**
+ * @brief Menu for the user to be guided
+ * 
+ */
 void menu(){
     std::cout<<"\n\n\n";
-    std::cout<<"----Bienvenido a la biblioteca Ada Lovelace----"<<"\n";
-    std::cout<<"Que operacion desea hacer?\n";
-    std::cout<<"1. Prestamo\n";
-    std::cout<<"2. Renovacion\n";
-    std::cout<<"3. Devolucion\n";
-    std::cout<<"4. Salir\n";
+    std::cout<<"----Welcome to the Ada Lovelace Library----"<<"\n";
+    std::cout<<"What operation would you like to perform?\n";
+    std::cout<<"1. Loan\n";
+    std::cout<<"2. Renewal\n";
+    std::cout<<"3. Return\n";
+    std::cout<<"4. Exit\n";
 }
 
+/**
+ * @brief Function for making the request to the Gc [REQ-REP]
+ * 
+ * 
+ * @param request Request structure that contains information
+ * @param socket socket passed by reference
+ */
 void sendPsRequest(const Request& request, zmq::socket_t& socket){
     zmq::message_t message(sizeof(Request));
     memcpy(message.data(),&request,sizeof(Request));
     socket.send(message,zmq::send_flags::none);
-    std::cout<<"Enviado\n";
+    std::cout<<"Sent\n";
 }
 
+/**
+ * @brief Function for receiving the response of the Gc
+ * 
+ * @param socket socket passed by reference
+ */
 void receivePsResponse(zmq::socket_t& socket){
     zmq::message_t response;
     zmq::recv_result_t result = socket.recv(response,zmq::recv_flags::none);
     if(!result){
-        std::cout<<"No succesful response from Gc\n";
+        std::cerr<<"No succesful response from Gc\n";
     }
     std::string contenido((char *)(response.data()), response.size());
     std::cout<<contenido<<"\n";
 }
 
+/**
+ * @brief main function
+ * 
+ * @param argc 
+ * @param argv 
+ * @return int 
+ */
 int main(int argc, char* argv[]){
     std::vector<std::string> directionsPool;
     std::int8_t loc;
@@ -55,7 +83,7 @@ int main(int argc, char* argv[]){
         loc = std::int8_t(std::stoi(argv[1]));
         loc--;
         if(loc >= std::int8_t(directionsPool.size())){
-        std::cout<<"Location doesn't exist\n";
+        std::cerr<<"Location doesn't exist\n";
         return 0;
         }
     }else if((argc == 4) && (std::string(argv[2]) == "-f")){
@@ -66,11 +94,11 @@ int main(int argc, char* argv[]){
             std::cout<<"Location doesn't exist\n";
             return 0;
         }
-        std::cout<<"Se cargaran los datos del archivo: "<<argv[3]<<"\n";
+        std::cout<<"The data from the file "<<argv[3]<<" will be loaded\n";
         file = true;
 
     }else{
-        std::cerr<<"Run format is ./[fileName] [#Location]";
+        std::cerr<<"Run format is ./fileName #Location [-f] [bulkInsertion.txt]";
         return 0;
     }
 
@@ -114,8 +142,8 @@ int main(int argc, char* argv[]){
     }
 
     int opc;
+    std::cout<<"Connect succesfully at: "<<completeSocketDir<<"\n";
     while(true){
-        std::cout<<"Connect succesfully at: "<<completeSocketDir<<"\n";
         menu();
         std::cin>>opc;
         Request request;
@@ -123,21 +151,21 @@ int main(int argc, char* argv[]){
         switch(opc){
             case 1:
                 request.requestType = RequestType::LOAN;
-                std::cout<<"Ingrese el codigo del libro que desea pedir prestado: ";
+                std::cout<<"Enter the code of the book you wish to borrow: ";
                 std::cin>> request.code;
                 sendPsRequest(request,socket);
                 receivePsResponse(socket);
                 break;
             case 2:
                 request.requestType = RequestType::RENEWAL;
-                std::cout<<"Ingrese el codigo del libro que desea renovar ";
+                std::cout<<"Enter the code for the book you wish to renew: ";
                 std::cin>> request.code;
                 sendPsRequest(request,socket);
                 receivePsResponse(socket);
                 break;
             case 3:
                 request.requestType = RequestType::RETURN;
-                std::cout<<"Ingrese el codigo del libro que desea devolver ";
+                std::cout<<"Enter the code of the book you wish to return: ";
                 std::cin>> request.code;
                 sendPsRequest(request,socket);
                 receivePsResponse(socket);
@@ -150,24 +178,3 @@ int main(int argc, char* argv[]){
         }
     }
 }
-
-
-/*
-for(int i = 0; i < 10; i++){
-        // Enviar mensaje
-        zmq::message_t request(5);
-        memcpy(request.data(), "Hello", 5);
-        std::cout << "Enviando Hello " << i << "..." << std::endl;
-        socket.send(request, zmq::send_flags::none);
-        
-        // IMPORTANTE: Debes recibir la respuesta antes de enviar de nuevo
-        zmq::message_t reply;
-        socket.recv(reply, zmq::recv_flags::none);
-        
-        std::string respuesta(static_cast<char*>(reply.data()), reply.size());
-        std::cout << "Respuesta recibida: " << respuesta << std::endl;
-    }
-    return 0;
-
-
-*/

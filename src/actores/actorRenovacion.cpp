@@ -4,6 +4,11 @@
 #include <fstream>
 #include "../../utils/structs.cpp"
 
+/**
+ * @brief Function to read data from the file containing the environment variables 
+ * 
+ * @param v for storing IP values
+ */
 void obtainEnvData(std::vector<std::string> &v){
     std::fstream f("../.env");
     std::string key,val;
@@ -12,6 +17,11 @@ void obtainEnvData(std::vector<std::string> &v){
     }
 }
 
+/**
+ * @brief Function for receiving the response
+ * 
+ * @param socket socket passed by reference
+ */
 std::string receiveArResponse(zmq::socket_t& socket){
     zmq::message_t response;
     zmq::recv_result_t result =  socket.recv(response, zmq::recv_flags::none);
@@ -23,10 +33,23 @@ std::string receiveArResponse(zmq::socket_t& socket){
     return content;
 }
 
+/**
+ * @brief Function for making the request to the respective GA [REQ-REP]
+ * 
+ * @param message 
+ * @param socket 
+ */
 void sendArRequest(zmq::message_t& message, zmq::socket_t& socket){
     socket.send(message, zmq::send_flags::none);
 }
 
+/**
+ * @brief main function
+ * 
+ * @param argc 
+ * @param argv 
+ * @return int 
+ */
 int main(int argc, char* argv[]){
     std::vector<std::string> directionsPool;
     std::int8_t loc;

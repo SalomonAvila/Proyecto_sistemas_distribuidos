@@ -4,6 +4,11 @@
 #include <fstream>
 #include "../../utils/structs.cpp"
 
+/**
+ * @brief Function to read data from the file containing the environment variables 
+ * 
+ * @param v for storing IP values
+ */
 void obtainEnvData(std::vector<std::string> &v){
     std::fstream f("../.env");
     std::string key,val;
