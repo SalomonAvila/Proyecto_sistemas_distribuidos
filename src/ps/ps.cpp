@@ -1,5 +1,6 @@
 #include <zmq.hpp>
 #include <iostream>
+#include <unistd.h>
 #include <string>
 #include <cstdint>
 #include <fstream>
@@ -12,6 +13,7 @@ void obtainEnvData(std::vector<std::string> &v){
     while (std::getline(f, key, '=') && std::getline(f, val)) {
         v.push_back(val);
     }
+    f.close();
 }
 
 void menu(){
@@ -44,17 +46,29 @@ void receivePsResponse(zmq::socket_t& socket){
 int main(int argc, char* argv[]){
     std::vector<std::string> directionsPool;
     std::int8_t loc;
+    bool file = false;
     if(argc == 1){
         std::cerr<<"Cannot stablish conection without library location\n";
         return 0;
     }else if(argc == 2){
         obtainEnvData(directionsPool);
-         loc = std::int8_t(std::stoi(argv[1]));
-         loc--;
-         if(loc >= std::int8_t(directionsPool.size())){
+        loc = std::int8_t(std::stoi(argv[1]));
+        loc--;
+        if(loc >= std::int8_t(directionsPool.size())){
+        std::cout<<"Location doesn't exist\n";
+        return 0;
+        }
+    }else if((argc == 4) && (std::string(argv[2]) == "-f")){
+        obtainEnvData(directionsPool);
+        loc = std::int8_t(std::stoi(argv[1]));
+        loc--;
+        if(loc >= std::int8_t(directionsPool.size())){
             std::cout<<"Location doesn't exist\n";
             return 0;
-         }
+        }
+        std::cout<<"Se cargaran los datos del archivo: "<<argv[3]<<"\n";
+        file = true;
+
     }else{
         std::cerr<<"Run format is ./[fileName] [#Location]";
         return 0;
@@ -67,6 +81,37 @@ int main(int argc, char* argv[]){
     completeSocketDir.append(":5555");
     socket.connect(completeSocketDir);
 
+    if(file){
+        std::string reqType, code, location;
+        std::string route = "../";
+        route.append(argv[3]);
+        std::fstream f(route);
+        Request request;
+        int c = 1;
+        while(f>>reqType>>code>>location){
+            std::cout<<c<<"\n";
+            request.code = std::int32_t(std::stoi(code));
+            std::int8_t formattedLocation = std::int8_t(std::stoi(location));
+            formattedLocation--;
+            if(formattedLocation != loc){
+                std::cout<<"You need to go to the location the loan was registered\n";
+                continue;
+            }
+            std::cout<<"Formatted location = "<<formattedLocation<<"\n";
+            request.location = formattedLocation;
+            if(reqType == "LOAN"){
+                request.requestType = RequestType::LOAN;
+            }else if(reqType == "RENEWAL"){
+                request.requestType = RequestType::RENEWAL;
+            }else if(reqType == "RETURN"){
+                request.requestType = RequestType::RETURN;
+            };
+            sendPsRequest(request,socket);
+            receivePsResponse(socket);
+            c++;
+        }
+        return 0;
+    }
 
     int opc;
     while(true){

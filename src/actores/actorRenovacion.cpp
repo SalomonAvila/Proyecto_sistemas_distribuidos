@@ -12,7 +12,7 @@ void obtainEnvData(std::vector<std::string> &v){
     }
 }
 
-std::string receiveGcResponse(zmq::socket_t& socket){
+std::string receiveArResponse(zmq::socket_t& socket){
     zmq::message_t response;
     zmq::recv_result_t result =  socket.recv(response, zmq::recv_flags::none);
     if(!result){
@@ -21,6 +21,10 @@ std::string receiveGcResponse(zmq::socket_t& socket){
     }
     std::string content((char *)response.data(), response.size());
     return content;
+}
+
+void sendArRequest(zmq::message_t& message, zmq::socket_t& socket){
+    socket.send(message, zmq::send_flags::none);
 }
 
 int main(int argc, char* argv[]){
@@ -72,8 +76,8 @@ int main(int argc, char* argv[]){
         std::cout << " - Tipo: " << int(req.requestType) << "\n";
         std::cout << " - Código libro: " << req.code << "\n";
         std::cout << " - Sede: " << int(req.location) << "\n";
-        
-        socketTwo.send(message,zmq::send_flags::none);
-        std::string response = receiveGcResponse(socketTwo);
+
+        sendArRequest(message,socketTwo);
+        std::string response = receiveArResponse(socketTwo);
     }
 }
