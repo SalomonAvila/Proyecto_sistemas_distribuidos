@@ -52,15 +52,19 @@ std::string loanBook(int code, int location, pqxx::connection &C){
         pqxx::result R = W.exec(
             "SELECT id_libro, " + columna_ejemplares + " "
             "FROM libros "
-            "WHERE codigo = " + std::to_string(code)
+            "WHERE codigo = " + W.quote(code)
         );
 
-        if (R.empty()) return "Error: El libro no existe.";
+        if (R.empty()) {
+            W.abort(); // Importante: abortar antes de retornar
+            return "Error: El libro no existe.";
+        }
         
         int id_libro = R[0]["id_libro"].as<int>();
         int ejemplares_disponibles = R[0][columna_ejemplares].as<int>();
 
         if (ejemplares_disponibles <= 0) {
+            W.abort(); // Importante: abortar antes de retornar
             return "Error: No hay ejemplares disponibles de este libro.";
         }
 
@@ -68,33 +72,36 @@ std::string loanBook(int code, int location, pqxx::connection &C){
         W.exec(
             "UPDATE libros "
             "SET " + columna_ejemplares + " = " + columna_ejemplares + " - 1 "
-            "WHERE id_libro = " + std::to_string(id_libro)
+            "WHERE id_libro = " + W.quote(id_libro)
         );
 
         // Create a new record in the estados table
         W.exec(
             "INSERT INTO estados (id_libro, tipo_operacion, fecha_operacion, fecha_devolucion_prevista, sede, renovaciones) "
             "VALUES (" +
-                std::to_string(id_libro) + ", " +
-                "'prestamo', " +
+                W.quote(id_libro) + ", " +
+                W.quote("prestamo") + ", " +
                 "NOW(), " +
                 "(NOW() + interval '14 days')::date, " +
-                std::to_string(sede_real) + ", " +
+                W.quote(sede_real) + ", " +
                 "0" +
             ")"
         );
 
+        // Get the return date BEFORE commit
+        pqxx::result fecha_result = W.exec("SELECT (NOW() + interval '14 days')::date");
+        std::string fecha_devolucion = fecha_result[0][0].as<std::string>();
+        
         W.commit();
-        return "Préstamo exitoso. Fecha de devolución: " + 
-               (W.exec("SELECT NOW() + interval '14 days'")[0][0].as<std::string>());
+        
+        return "Préstamo exitoso. Fecha de devolución: " + fecha_devolucion;
     }
     catch (const std::exception &e){
         return std::string("Error en BD: ") + e.what();
     }
 }
-
 /**
- * @brief Function to interact with PostgreSQL (versión simplificada)
+ * @brief Function to interact with PostgreSQL (versión modificada)
  * 
  * @param code 
  * @param location 
@@ -106,7 +113,7 @@ std::string renewBook(int code, int location, pqxx::connection &C){
     try{
         pqxx::work W(C);
         
-        // Buscar el préstamo más reciente que no haya sido devuelto
+        // Buscar el préstamo con menor número de renovaciones que no haya sido devuelto
         pqxx::result R = W.exec(
             "SELECT e.id_estado, e.renovaciones "
             "FROM estados e "
@@ -114,22 +121,14 @@ std::string renewBook(int code, int location, pqxx::connection &C){
             "WHERE l.codigo = " + std::to_string(code) +
             " AND e.sede = " + std::to_string(sede_real) +
             " AND e.tipo_operacion = 'prestamo' "
-            " AND e.id_estado = ( "
-            "     SELECT e2.id_estado "
-            "     FROM estados e2 "
-            "     JOIN libros l2 ON l2.id_libro = e2.id_libro "
-            "     WHERE l2.codigo = " + std::to_string(code) +
-            "     AND e2.sede = " + std::to_string(sede_real) +
-            "     AND e2.tipo_operacion = 'prestamo' "
-            "     ORDER BY e2.fecha_operacion DESC "
-            "     LIMIT 1 "
-            " ) "
             " AND NOT EXISTS ( "
             "     SELECT 1 FROM estados e3 "
             "     WHERE e3.id_libro = e.id_libro "
             "     AND e3.tipo_operacion = 'devuelto' "
             "     AND e3.fecha_operacion > e.fecha_operacion "
-            " )");
+            " )"
+            " ORDER BY e.renovaciones ASC, e.fecha_operacion ASC "
+            " LIMIT 1");
             
         if (R.empty()) {
             return "Error: No se encontró un préstamo activo para este libro en esta sede.";
@@ -158,34 +157,60 @@ std::string renewBook(int code, int location, pqxx::connection &C){
 }
 
 /**
- * @brief Function to interact with PostgreSQL
+ * @brief Function to process a book return request with specific priority logic.
  * 
- * @param code 
- * @param location 
- * @param C 
- * @return std::string 
+ * @param codigo Book code
+ * @param sede Location (0 or 1)
+ * @param C Database connection
+ * @return std::string Result message
  */
 std::string returnBook(int codigo, int sede, pqxx::connection &C){
     int sede_real = sede + 1;
-    pqxx::work W(C);
-    pqxx::result R = W.exec(
-        "SELECT e.id_estado, e.id_libro "
-        "FROM estados e "
-        "JOIN libros l ON l.id_libro = e.id_libro "
-        "WHERE l.codigo = " +
-        std::to_string(codigo) +
-        " AND e.sede = " + std::to_string(sede_real) +
-        " AND e.tipo_operacion != 'devuelto' "
-        "ORDER BY e.fecha_operacion DESC "
-        "LIMIT 1;");
-    if (R.empty()) return "Loan not found";
-    int id_estado = R[0]["id_estado"].as<int>();
-    int id_libro = R[0]["id_libro"].as<int>();
-    W.exec("UPDATE estados SET tipo_operacion = 'devuelto' WHERE id_estado = " + std::to_string(id_estado) + ";");
-    std::string columna = (sede == 1) ? "ejemplares_sede1" : "ejemplares_sede2";
-    W.exec("UPDATE libros SET " + columna + " = " + columna + " + 1 WHERE id_libro = " + std::to_string(id_libro) + ";");
-    W.commit();
-    return "Loan successfully repaid and copies updated";
+
+    try {
+        pqxx::work W(C);
+        
+        // 1. Buscar todos los préstamos activos del libro en esta sede
+        //    y seleccionar el que tiene el MAYOR número de renovaciones
+        pqxx::result R = W.exec(
+            "SELECT e.id_estado, e.id_libro "
+            "FROM estados e "
+            "JOIN libros l ON l.id_libro = e.id_libro "
+            "WHERE l.codigo = " + std::to_string(codigo) + 
+            " AND e.sede = " + std::to_string(sede_real) + 
+            " AND e.tipo_operacion = 'prestamo' "
+            "ORDER BY e.renovaciones DESC, e.fecha_operacion DESC "
+            "LIMIT 1"
+        );
+
+        if (R.empty()) {
+            return "Error: No se encontró un préstamo activo para este libro en esta sede.";
+        }
+
+        int id_estado = R[0]["id_estado"].as<int>();
+        int id_libro = R[0]["id_libro"].as<int>();
+
+        // 2. Marcar ese préstamo como 'devuelto'
+        W.exec(
+            "UPDATE estados "
+            "SET tipo_operacion = 'devuelto' "
+            "WHERE id_estado = " + std::to_string(id_estado)
+        );
+
+        // 3. Incrementar los ejemplares disponibles en la sede correcta
+        std::string columna_ejemplares = (sede_real == 1) ? "ejemplares_sede1" : "ejemplares_sede2";
+        W.exec(
+            "UPDATE libros "
+            "SET " + columna_ejemplares + " = " + columna_ejemplares + " + 1 "
+            "WHERE id_libro = " + std::to_string(id_libro)
+        );
+
+        W.commit();
+        return "Devolución exitosa. Ejemplar disponible nuevamente.";
+    }
+    catch (const std::exception &e) {
+        return std::string("Error en BD: ") + e.what();
+    }
 }
 
 /**
