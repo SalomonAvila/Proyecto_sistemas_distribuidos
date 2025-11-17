@@ -26,10 +26,16 @@ std::string receiveArResponse(zmq::socket_t& socket){
     zmq::message_t response;
     zmq::recv_result_t result =  socket.recv(response, zmq::recv_flags::none);
     if(!result){
-        std::cerr<<"ERROR\n";
-        return 0;
+        std::cerr<<"ERROR: Failed to receive response from GA\n";
+        return "ERROR";
     }
-    std::string content((char *)response.data(), response.size());
+    
+    if(response.size() == 0){
+        std::cerr<<"ERROR: Empty response from GA\n";
+        return "ERROR";
+    }
+    
+    std::string content(static_cast<char*>(response.data()), response.size());
     return content;
 }
 
@@ -82,6 +88,9 @@ int main(int argc, char* argv[]){
     completeSocketDir.append(directionsPool[0]);
     completeSocketDir.append(":5560"); 
     socketTwo.connect(completeSocketDir);
+
+    socketTwo.set(zmq::sockopt::rcvtimeo, 5000);
+    socketTwo.set(zmq::sockopt::sndtimeo, 5000);
 
     while(true){
         zmq::message_t topicMessage;

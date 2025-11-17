@@ -7,7 +7,7 @@
 #include "../../utils/structs.cpp"
 
 /**
- * @brief Function to read data from the file containing the environment variables 
+ * @brief Function to read data from the file containing environment variables 
  * 
  * @param v for storing IP values
  */
@@ -20,7 +20,7 @@ void obtainEnvData(std::vector<std::string> &v){
 }
 
 /**
- * @brief Function for making the request to the respective GA [PUB-SUB]
+ * @brief Function for making request to the respective GA [PUB-SUB]
  * 
  * @param topic Topic for the publisher to publish
  * @param request Request structure that contains information
@@ -34,7 +34,67 @@ void sendAsyncGaRequest(const std::string &topic, const Request &request, zmq::s
 }
 
 /**
- * @brief Function to interact with PostgreSQL
+ * @brief Function to process a book loan request
+ * 
+ * @param code Book code
+ * @param location Location (0 or 1)
+ * @param C Database connection
+ * @return std::string Result message
+ */
+std::string loanBook(int code, int location, pqxx::connection &C){
+    int sede_real = location + 1;
+    std::string columna_ejemplares = (sede_real == 1) ? "ejemplares_sede1" : "ejemplares_sede2";
+
+    try{
+        pqxx::work W(C);
+        
+        // Check if the book exists and has available copies at the specified location
+        pqxx::result R = W.exec(
+            "SELECT id_libro, " + columna_ejemplares + " "
+            "FROM libros "
+            "WHERE codigo = " + std::to_string(code)
+        );
+
+        if (R.empty()) return "Error: El libro no existe.";
+        
+        int id_libro = R[0]["id_libro"].as<int>();
+        int ejemplares_disponibles = R[0][columna_ejemplares].as<int>();
+
+        if (ejemplares_disponibles <= 0) {
+            return "Error: No hay ejemplares disponibles de este libro.";
+        }
+
+        // Decrement the count of available copies
+        W.exec(
+            "UPDATE libros "
+            "SET " + columna_ejemplares + " = " + columna_ejemplares + " - 1 "
+            "WHERE id_libro = " + std::to_string(id_libro)
+        );
+
+        // Create a new record in the estados table
+        W.exec(
+            "INSERT INTO estados (id_libro, tipo_operacion, fecha_operacion, fecha_devolucion_prevista, sede, renovaciones) "
+            "VALUES (" +
+                std::to_string(id_libro) + ", " +
+                "'prestamo', " +
+                "NOW(), " +
+                "(NOW() + interval '14 days')::date, " +
+                std::to_string(sede_real) + ", " +
+                "0" +
+            ")"
+        );
+
+        W.commit();
+        return "Préstamo exitoso. Fecha de devolución: " + 
+               (W.exec("SELECT NOW() + interval '14 days'")[0][0].as<std::string>());
+    }
+    catch (const std::exception &e){
+        return std::string("Error en BD: ") + e.what();
+    }
+}
+
+/**
+ * @brief Function to interact with PostgreSQL (versión simplificada)
  * 
  * @param code 
  * @param location 
@@ -45,30 +105,52 @@ std::string renewBook(int code, int location, pqxx::connection &C){
     int sede_real = location + 1;
     try{
         pqxx::work W(C);
+        
+        // Buscar el préstamo más reciente que no haya sido devuelto
         pqxx::result R = W.exec(
-            "SELECT id_estado, renovaciones "
+            "SELECT e.id_estado, e.renovaciones "
             "FROM estados e "
             "JOIN libros l ON l.id_libro = e.id_libro "
-            "WHERE l.codigo = " +
-            std::to_string(code) +
+            "WHERE l.codigo = " + std::to_string(code) +
             " AND e.sede = " + std::to_string(sede_real) +
             " AND e.tipo_operacion = 'prestamo' "
-            "ORDER BY e.fecha_operacion DESC "
-            "LIMIT 1");
-        if (R.empty()) return "Loan not found";
-        int id_estado = R[0][0].as<int>();
-        int renovaciones = R[0][1].as<int>();
-        if (renovaciones >= 2){
-            return "Max renovation limit reached (2)";
+            " AND e.id_estado = ( "
+            "     SELECT e2.id_estado "
+            "     FROM estados e2 "
+            "     JOIN libros l2 ON l2.id_libro = e2.id_libro "
+            "     WHERE l2.codigo = " + std::to_string(code) +
+            "     AND e2.sede = " + std::to_string(sede_real) +
+            "     AND e2.tipo_operacion = 'prestamo' "
+            "     ORDER BY e2.fecha_operacion DESC "
+            "     LIMIT 1 "
+            " ) "
+            " AND NOT EXISTS ( "
+            "     SELECT 1 FROM estados e3 "
+            "     WHERE e3.id_libro = e.id_libro "
+            "     AND e3.tipo_operacion = 'devuelto' "
+            "     AND e3.fecha_operacion > e.fecha_operacion "
+            " )");
+            
+        if (R.empty()) {
+            return "Error: No se encontró un préstamo activo para este libro en esta sede.";
         }
+        
+        int id_estado = R[0]["id_estado"].as<int>();
+        int renovaciones = R[0]["renovaciones"].as<int>();
+        
+        if (renovaciones >= 2){
+            return "Error: Límite máximo de renovaciones alcanzado (2).";
+        }
+        
+        // Actualizar el préstamo
         W.exec(
             "UPDATE estados "
             "SET renovaciones = renovaciones + 1, "
             "    fecha_devolucion_prevista = fecha_devolucion_prevista + INTERVAL '7 days' "
-            "WHERE id_estado = " +
-            std::to_string(id_estado));
+            "WHERE id_estado = " + std::to_string(id_estado));
+            
         W.commit();
-        return "Loan successfully renewed";
+        return "Préstamo renovado exitosamente por 7 días adicionales.";
     }
     catch (const std::exception &e){
         return std::string("Error: ") + e.what();
@@ -189,7 +271,18 @@ int main(int argc, char *argv[]){
                 locat++;
                 switch (int(req.requestType)){
                     case 0:
-                        std::cerr << "TO BE IMPLEMENTED\n";
+                        std::cout << "Option to loan\n";
+                        reply = loanBook(req.code, req.location, C);
+                        std::cout << "\n\nResponse: " << reply << "\n\n";
+                        
+                        // Solo enviar réplica si la operación fue exitosa
+                        if (reply.find("Error") == std::string::npos) {
+                            sendAsyncGaRequest("replica", req, socketTwo);
+                            std::cout << "Message sent to the replica\n";
+                        }
+                        
+                        socketOne.send(zmq::buffer(reply), zmq::send_flags::none);
+                        std::cout << "Returned to the request socket\n";
                         break;
                     case 1:
                         std::cout << "Option to renew\n";
@@ -248,7 +341,9 @@ int main(int argc, char *argv[]){
                 std::cout << "The code is: " << int(req.requestType) << "\n";
                 switch (int(req.requestType)){
                     case 0:
-                        std::cerr << "TO BE IMPLEMENTED\n";
+                        std::cout << "Option to loan\n";
+                        reply = loanBook(req.code, req.location, C);
+                        std::cout << "Loan processed in replica: " << reply << "\n";
                         break;
                     case 1:
                         std::cout << "Option to renew\n";
