@@ -37,3 +37,15 @@ Si desea reiniciar el servicio desde 0, creando nuevamente las tablas y realizan
 ## Ejecución
 
 Como se ha planteado en el enunciado, se prevé el uso de 3 máquinas. En la primera de estas solo se ejecutarán procesos solicitantes. En la segunda (cuya IP corresponde con el valor de *IP_SEDE_1* de las variables de entorno) se ejecutará el gestor de carga de la sede, los actores correspondientes a las operaciones que se deseen probar de la sede y por último el gestor de archivos de la sede. En la última máquina (cuya IP corresponde con el valor de *IP_SEDE_2* de las variables de entorno) se ejecutará el gestor de carga de la sede, los actores correspondientes a las operaciones que se deseen probar de la sede y por último el gestor de archivos de la sede.
+
+
+# Entrega 2
+
+## Consideraciones importantes
+Para esta entrega 2, se adicionó la operación funcamental de prestamo, por lo tanto para poder ser utilizada es importante correr el actori asociado a esta operacion. Adicionalmente, se realizo una refactorizacion del codigo para que sea mas claro al momento de su lectura. La configuracion se mantuvo igual salvo por el generador de carga.
+
+## Generacion de carga
+Para poder realizar esta generacion, se supone se tienen instaladas las dependencias relacionada a esta herramienta. Para correr esta herramienta, basta con estár dentro de la ubicacion que contenga nuestro locustfile.py y ejecutar en terminal el comando: "locust -f locustfile.py".
+
+Por la naturaleza de nuestro locustfile, las direcciones IP's de las sedes están quemadas dentro del codigo, pero para futuras actualizaciones valiera la pena leerlo del archivo de las variables de entorno.
+
