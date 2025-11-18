@@ -8,53 +8,58 @@
 #include <mutex>
 #include "../../utils/structs.cpp"
 
-std::atomic<bool> primaryAlive(true);
-std::atomic<bool> running(true);
+std::atomic<bool> primaryGaAlive(true);
+std::atomic<bool> isRunning(true);
 std::mutex gaAddressMutex;
 std::string currentGaAddress;
 
-void obtainEnvData(std::vector<std::string> &v){
-    std::fstream f("../.env");
-    std::string key,val;
-    while (std::getline(f, key, '=') && std::getline(f, val)) {
-        v.push_back(val);
+void obtainEnvData(std::vector<std::string> &environmentVariables){
+    std::fstream configFile("../.env");
+    std::string key, value;
+    while (std::getline(configFile, key, '=') && std::getline(configFile, value)) {
+        environmentVariables.push_back(value);
     }
 }
 
-void heartbeatMonitor(zmq::context_t &context, const std::string &primaryAddr, const std::string &secondaryAddr){
+void monitorGaHeartbeat(zmq::context_t &context, const std::string &primaryIp, const std::string &secondaryIp){
     zmq::socket_t heartbeatSocket(context, zmq::socket_type::sub);
-    std::string heartbeatEndpoint = "tcp://" + primaryAddr + ":5562";
+    std::string heartbeatEndpoint = "tcp://" + primaryIp + ":5562";
     heartbeatSocket.connect(heartbeatEndpoint);
     heartbeatSocket.set(zmq::sockopt::subscribe, "");
     heartbeatSocket.set(zmq::sockopt::rcvtimeo, 5000);
     
-    std::cout << "[HB Monitor] Monitoring " << heartbeatEndpoint << std::endl;
+    std::cout << "[AP-Heartbeat] Monitoring primary GA at " << heartbeatEndpoint << "\n";
     
-    int missedHeartbeats = 0;
-    const int MAX_MISSED = 3;
+    int missedHeartbeatCount = 0;
+    const int maxMissedHeartbeats = 3;
     
-    while(running){
-        zmq::message_t msg;
-        zmq::recv_result_t result = heartbeatSocket.recv(msg, zmq::recv_flags::none);
+    while(isRunning){
+        zmq::message_t heartbeatMessage;
+        zmq::recv_result_t receiveResult = heartbeatSocket.recv(heartbeatMessage, zmq::recv_flags::none);
         
-        if(result && msg.size() > 0){
-            missedHeartbeats = 0;
-            if(!primaryAlive){
-                std::cout << "\n✓ PRIMARY RECOVERED!\n\n";
-                std::lock_guard<std::mutex> lock(gaAddressMutex);
-                currentGaAddress = "tcp://" + primaryAddr + ":5560";
-                primaryAlive = true;
+        if(receiveResult && heartbeatMessage.size() > 0){
+            missedHeartbeatCount = 0;
+            if(!primaryGaAlive){
+                std::cout << "\n[AP-Recovery] Primary GA is back, switching\n\n";
+                {
+                    std::lock_guard<std::mutex> lock(gaAddressMutex);
+                    currentGaAddress = "tcp://" + primaryIp + ":5560";
+                }
+                primaryGaAlive = true;
             }
         } else {
-            missedHeartbeats++;
-            if(missedHeartbeats >= MAX_MISSED && primaryAlive){
-                std::cout << "\n⚠️  PRIMARY FAILED! FAILOVER...\n\n";
-                std::lock_guard<std::mutex> lock(gaAddressMutex);
-                currentGaAddress = "tcp://" + secondaryAddr + ":5560";
-                primaryAlive = false;
+            missedHeartbeatCount++;
+            if(missedHeartbeatCount >= maxMissedHeartbeats && primaryGaAlive){
+                std::cout << "\n[AP-Failover] Primary GA down, switching to secondary\n\n";
+                {
+                    std::lock_guard<std::mutex> lock(gaAddressMutex);
+                    currentGaAddress = "tcp://" + secondaryIp + ":5560";
+                }
+                primaryGaAlive = false;
             }
         }
     }
+    std::cout << "[AP-Heartbeat] Monitor stopped\n";
 }
 
 std::string getCurrentGaAddress(){
@@ -62,68 +67,115 @@ std::string getCurrentGaAddress(){
     return currentGaAddress;
 }
 
-std::string sendRequestWithFailover(zmq::message_t& message, zmq::context_t& context){
-    for(int attempt = 0; attempt < 3; attempt++){
+std::string sendRequestWithFailover(zmq::message_t& requestMessage, zmq::context_t& context){
+    int maxRetryAttempts = 3;
+    int baseDelayMs = 200;
+    int maxDelayMs = 1000;
+    int socketTimeoutMs = 2000;
+    
+    for(int attemptNumber = 0; attemptNumber < maxRetryAttempts; attemptNumber++){
         try {
-            zmq::socket_t socket(context, zmq::socket_type::req);
-            socket.set(zmq::sockopt::rcvtimeo, 3000);
-            socket.set(zmq::sockopt::sndtimeo, 3000);
-            socket.connect(getCurrentGaAddress());
+            zmq::socket_t gaSocket(context, zmq::socket_type::req);
+            gaSocket.set(zmq::sockopt::rcvtimeo, socketTimeoutMs);
+            gaSocket.set(zmq::sockopt::sndtimeo, socketTimeoutMs);
+            gaSocket.connect(getCurrentGaAddress());
 
-            zmq::message_t msgCopy(message.size());
-            memcpy(msgCopy.data(), message.data(), message.size());
-            socket.send(msgCopy, zmq::send_flags::none);
+            zmq::message_t requestCopy(requestMessage.size());
+            memcpy(requestCopy.data(), requestMessage.data(), requestMessage.size());
+            gaSocket.send(requestCopy, zmq::send_flags::none);
 
-            zmq::message_t response;
-            if(socket.recv(response, zmq::recv_flags::none) && response.size() > 0){
-                socket.close();
-                return std::string(static_cast<char*>(response.data()), response.size());
+            zmq::message_t gaResponse;
+            zmq::recv_result_t receiveResult = gaSocket.recv(gaResponse, zmq::recv_flags::none);
+            gaSocket.close();
+            
+            if(receiveResult && gaResponse.size() > 0){
+                return std::string(static_cast<char*>(gaResponse.data()), gaResponse.size());
             }
-            socket.close();
-        } catch (const zmq::error_t& e) {}
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        } catch (const zmq::error_t& error) {
+            std::cerr << "[AP-Error] ZMQ error on attempt " << (attemptNumber + 1) << ": " << error.what() << "\n";
+        }
+
+        if(attemptNumber < maxRetryAttempts - 1){
+            int delayMs = std::min(baseDelayMs * (1 << attemptNumber), maxDelayMs);
+            std::cout << "[AP-Retry] Request failed, retrying in " << delayMs << " ms\n";
+            std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        }
     }
-    return "ERROR: No GA available";
+    std::cerr << "[AP-Error] All " << maxRetryAttempts << " attempts failed\n";
+    return "ERROR";
 }
 
 int main(int argc, char* argv[]){
-    std::vector<std::string> directionsPool;
-    if(argc != 2) return 0;
+    std::vector<std::string> ipAddressList;
+    std::int8_t locationIndex;
     
-    obtainEnvData(directionsPool);
-    std::int8_t loc = std::int8_t(std::stoi(argv[1])) - 1;
+    if(argc == 1){
+        std::cout << "[AP-Error] Cannot establish connection without IP\n";
+        return 0;
+    } else if(argc == 2){
+        obtainEnvData(ipAddressList);
+        locationIndex = std::int8_t(std::stoi(argv[1])) - 1;
+        
+        if (locationIndex >= std::int8_t(ipAddressList.size())){
+            std::cout << "[AP-Error] This location does not exist\n";
+            return 0;
+        }
+    }
+
+    std::cout << "========================================\n";
+    std::cout << "    LOAN ACTOR (AP) - STARTING\n";
+    std::cout << "========================================\n";
     
-    std::cout << "======== ACTOR PRÉSTAMO ========\n";
+    zmq::context_t zmqContext(1);
     
-    zmq::context_t context(1);
-    zmq::socket_t socketOne(context, zmq::socket_type::rep);
-    std::string addr = "tcp://" + directionsPool[loc] + ":5556";
-    socketOne.bind(addr);
+    zmq::socket_t gcSocket(zmqContext, zmq::socket_type::rep);
+    std::string gcEndpoint = "tcp://";
+    gcEndpoint.append(ipAddressList[locationIndex]);
+    gcEndpoint.append(":5556");
+    gcSocket.bind(gcEndpoint);
+    
+    std::cout << "[AP] Listening on " << gcEndpoint << "\n";
 
     {
         std::lock_guard<std::mutex> lock(gaAddressMutex);
-        currentGaAddress = "tcp://" + directionsPool[0] + ":5560";
+        currentGaAddress = "tcp://" + ipAddressList[0] + ":5560";
     }
     
-    std::thread hbThread(heartbeatMonitor, std::ref(context), 
-                         std::ref(directionsPool[0]), std::ref(directionsPool[1]));
+    std::cout << "[AP] Primary GA: tcp://" << ipAddressList[0] << ":5560\n";
+    std::cout << "[AP] Secondary GA: tcp://" << ipAddressList[1] << ":5560\n";
     
-    std::cout << "[Actor] Ready\n\n";
+    std::thread heartbeatThread(monitorGaHeartbeat, std::ref(zmqContext), 
+                         std::ref(ipAddressList[0]), std::ref(ipAddressList[1]));
+    
+    std::cout << "[AP] Ready to process LOAN requests\n\n";
 
     while(true){
-        zmq::message_t request;
-        socketOne.recv(request, zmq::recv_flags::none);
-        Request req;
-        memcpy(&req, request.data(), sizeof(Request));
-        std::string response = sendRequestWithFailover(request, context);
-        std::cout << "Solicitud recibida:\n";
-        std::cout << " - Tipo: " << int(req.requestType) << "\n";
-        std::cout << " - Código libro: " << req.code << "\n";
-        std::cout << " - Sede: " << int(req.location) << "\n";
-        socketOne.send(zmq::buffer(response), zmq::send_flags::none);
+        zmq::message_t gcRequest;
+        zmq::recv_result_t receiveResult = gcSocket.recv(gcRequest, zmq::recv_flags::none);
+        
+        if(!receiveResult || gcRequest.size() == 0){
+            continue;
+        }
+        
+        Request parsedRequest;
+        memcpy(&parsedRequest, gcRequest.data(), sizeof(Request));
+        
+        std::cout << "[AP] Request received from GC:\n";
+        std::cout << "[AP] Type: LOAN\n";
+        std::cout << "[AP] Book code: " << parsedRequest.code << "\n";
+        std::cout << "[AP] Location: " << int(parsedRequest.location) << "\n";
+
+        std::string gaResponse = sendRequestWithFailover(gcRequest, zmqContext);
+        
+        if(gaResponse == "ERROR"){
+            gaResponse = "Error: Could not process loan operation";
+        }
+        
+        std::cout << "[AP] Sending response to GC: " << gaResponse << "\n\n";
+        gcSocket.send(zmq::buffer(gaResponse), zmq::send_flags::none);
     }
     
-    running = false;
-    hbThread.join();
+    isRunning = false;
+    heartbeatThread.join();
     return 0;
 }

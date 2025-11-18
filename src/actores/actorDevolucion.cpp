@@ -2,114 +2,180 @@
 #include <iostream>
 #include <string>
 #include <fstream>
+#include <thread>
+#include <chrono>
+#include <atomic>
+#include <mutex>
 #include "../../utils/structs.cpp"
 
-/**
- * @brief Function to read data from the file containing the environment variables 
- * 
- * @param v for storing IP values
- */
-void obtainEnvData(std::vector<std::string> &v){
-    std::fstream f("../.env");
-    std::string key,val;
-    while (std::getline(f, key, '=') && std::getline(f, val)) {
-        v.push_back(val);
+std::atomic<bool> primaryGaAlive(true);
+std::atomic<bool> isRunning(true);
+std::mutex gaAddressMutex;
+std::string currentGaAddress;
+
+void obtainEnvData(std::vector<std::string> &environmentVariables){
+    std::fstream configFile("../.env");
+    std::string key, value;
+    while (std::getline(configFile, key, '=') && std::getline(configFile, value)) {
+        environmentVariables.push_back(value);
     }
 }
 
-/**
- * @brief Function for receiving the response
- * 
- * @param socket socket passed by reference
- */
-std::string receiveAdResponse(zmq::socket_t& socket){
-    zmq::message_t response;
-    zmq::recv_result_t result =  socket.recv(response, zmq::recv_flags::none);
-    if(!result){
-        std::cerr<<"ERROR: Failed to receive response from GA\n";
-        return "ERROR";
-    }
+void monitorGaHeartbeat(zmq::context_t &context, const std::string &primaryIp, const std::string &secondaryIp){
+    zmq::socket_t heartbeatSocket(context, zmq::socket_type::sub);
+    std::string heartbeatEndpoint = "tcp://" + primaryIp + ":5562";
+    heartbeatSocket.connect(heartbeatEndpoint);
+    heartbeatSocket.set(zmq::sockopt::subscribe, "");
+    heartbeatSocket.set(zmq::sockopt::rcvtimeo, 5000);
     
-    if(response.size() == 0){
-        std::cerr<<"ERROR: Empty response from GA\n";
-        return "ERROR";
-    }
+    std::cout << "[AD-Heartbeat] Monitoring primary GA at " << heartbeatEndpoint << "\n";
     
-    std::string content(static_cast<char*>(response.data()), response.size());
-    return content;
+    int missedHeartbeatCount = 0;
+    const int maxMissedHeartbeats = 3;
+    
+    while(isRunning){
+        zmq::message_t heartbeatMessage;
+        zmq::recv_result_t receiveResult = heartbeatSocket.recv(heartbeatMessage, zmq::recv_flags::none);
+        
+        if(receiveResult && heartbeatMessage.size() > 0){
+            missedHeartbeatCount = 0;
+            if(!primaryGaAlive){
+                std::cout << "\n[AD-Recovery] Primary GA is back, switching\n\n";
+                {
+                    std::lock_guard<std::mutex> lock(gaAddressMutex);
+                    currentGaAddress = "tcp://" + primaryIp + ":5560";
+                }
+                primaryGaAlive = true;
+            }
+        } else {
+            missedHeartbeatCount++;
+            if(missedHeartbeatCount >= maxMissedHeartbeats && primaryGaAlive){
+                std::cout << "\n[AD-Failover] Primary GA down, switching to secondary\n\n";
+                {
+                    std::lock_guard<std::mutex> lock(gaAddressMutex);
+                    currentGaAddress = "tcp://" + secondaryIp + ":5560";
+                }
+                primaryGaAlive = false;
+            }
+        }
+    }
+    std::cout << "[AD-Heartbeat] Monitor stopped\n";
 }
 
-/**
- * @brief Function for making the request to the respective GA [REQ-REP]
- * 
- * @param message 
- * @param socket 
- */
-void sendAdRequest(zmq::message_t& message, zmq::socket_t& socket){
-    socket.send(message, zmq::send_flags::none);
+std::string getCurrentGaAddress(){
+    std::lock_guard<std::mutex> lock(gaAddressMutex);
+    return currentGaAddress;
 }
 
-/**
- * @brief main function
- * 
- * @param argc 
- * @param argv 
- * @return int 
- */
+std::string sendRequestWithFailover(zmq::message_t& requestMessage, zmq::context_t& context){
+    int maxRetryAttempts = 3;
+    int baseDelayMs = 200;
+    int maxDelayMs = 1000;
+    int socketTimeoutMs = 2000;
+    
+    for(int attemptNumber = 0; attemptNumber < maxRetryAttempts; attemptNumber++){
+        try {
+            zmq::socket_t gaSocket(context, zmq::socket_type::req);
+            gaSocket.set(zmq::sockopt::rcvtimeo, socketTimeoutMs);
+            gaSocket.set(zmq::sockopt::sndtimeo, socketTimeoutMs);
+            gaSocket.connect(getCurrentGaAddress());
+
+            zmq::message_t requestCopy(requestMessage.size());
+            memcpy(requestCopy.data(), requestMessage.data(), requestMessage.size());
+            gaSocket.send(requestCopy, zmq::send_flags::none);
+
+            zmq::message_t gaResponse;
+            zmq::recv_result_t receiveResult = gaSocket.recv(gaResponse, zmq::recv_flags::none);
+            gaSocket.close();
+            
+            if(receiveResult && gaResponse.size() > 0){
+                return std::string(static_cast<char*>(gaResponse.data()), gaResponse.size());
+            }
+        } catch (const zmq::error_t& error) {
+            std::cerr << "[AD-Error] ZMQ error on attempt " << (attemptNumber + 1) << ": " << error.what() << "\n";
+        }
+
+        if(attemptNumber < maxRetryAttempts - 1){
+            int delayMs = std::min(baseDelayMs * (1 << attemptNumber), maxDelayMs);
+            std::cout << "[AD-Retry] Request failed, retrying in " << delayMs << " ms\n";
+            std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        }
+    }
+    std::cerr << "[AD-Error] All " << maxRetryAttempts << " attempts failed\n";
+    return "ERROR";
+}
+
 int main(int argc, char* argv[]){
-    std::vector<std::string> directionsPool;
-    std::int8_t loc;
-    if(argc == 1){
-        std::cout<<"No se puede establecer conexion si no se sabe la IP\n";
-        return 0;
-    }else if(argc == 2){
-        obtainEnvData(directionsPool);
-         loc = std::int8_t(std::stoi(argv[1]));
-         loc--;
-         if(loc >= std::int8_t(directionsPool.size())){
-            std::cout<<"No existe esta sede\n";
-            return 0;
-         }
-    }else{
-        std::cout<<"El formato de entrada es: ./[nombreDelArchivo] [IP] [#DeSede]";
-    }
-
-    zmq::context_t context(1);
-    zmq::socket_t socketOne(context, zmq::socket_type::sub);
-    std::string completeSocketDir = "tcp://";
-    completeSocketDir.append(directionsPool[loc]);
-    completeSocketDir.append(":5558"); 
-    socketOne.connect(completeSocketDir);
-    std::string topic = "return";
-    socketOne.set(zmq::sockopt::subscribe, topic);
-
-    zmq::socket_t socketTwo(context, zmq::socket_type::req);
-    completeSocketDir = "tcp://";
-    completeSocketDir.append(directionsPool[0]);
-    completeSocketDir.append(":5560"); 
-    socketTwo.connect(completeSocketDir);
-
-    socketTwo.set(zmq::sockopt::rcvtimeo, 10000);
-    socketTwo.set(zmq::sockopt::sndtimeo, 10000);
+    std::vector<std::string> ipAddressList;
+    std::int8_t locationIndex;
     
-    while(true){
-        zmq::message_t topicMessage;
-        zmq::message_t message;
-        zmq::recv_result_t resultOne = socketOne.recv(topicMessage,zmq::recv_flags::none);
-        zmq::recv_result_t resultTwo =  socketOne.recv(message,zmq::recv_flags::none);
-        if(!resultOne || !resultTwo){
-            std::cerr<<"NO SE PUDO OBTENER ALGUNO DE LOS 2 MENSAJES\n";
+    if(argc == 1){
+        std::cout << "[AD-Error] Cannot establish connection without IP\n";
+        return 0;
+    } else if(argc == 2){
+        obtainEnvData(ipAddressList);
+        locationIndex = std::int8_t(std::stoi(argv[1])) - 1;
+        
+        if (locationIndex >= std::int8_t(ipAddressList.size())){
+            std::cout << "[AD-Error] This location does not exist\n";
             return 0;
         }
-        Request req;
-        memcpy(&req, message.data(), sizeof(Request));
-        
-        std::cout << "Solicitud recibida:\n";
-        std::cout << " - Tipo: " << int(req.requestType) << "\n";
-        std::cout << " - Código libro: " << req.code << "\n";
-        std::cout << " - Sede: " << int(req.location) << "\n";
-        
-        sendAdRequest(message,socketTwo);
-        std::string response = receiveAdResponse(socketTwo);
     }
+
+    std::cout << "========================================\n";
+    std::cout << "    RETURN ACTOR (AD) - STARTING\n";
+    std::cout << "========================================\n";
+    
+    zmq::context_t zmqContext(1);
+    
+    zmq::socket_t gcSocket(zmqContext, zmq::socket_type::rep);
+    std::string gcEndpoint = "tcp://";
+    gcEndpoint.append(ipAddressList[locationIndex]);
+    gcEndpoint.append(":5557");
+    gcSocket.bind(gcEndpoint);
+    
+    std::cout << "[AD] Listening on " << gcEndpoint << "\n";
+
+    {
+        std::lock_guard<std::mutex> lock(gaAddressMutex);
+        currentGaAddress = "tcp://" + ipAddressList[0] + ":5560";
+    }
+    
+    std::cout << "[AD] Primary GA: tcp://" << ipAddressList[0] << ":5560\n";
+    std::cout << "[AD] Secondary GA: tcp://" << ipAddressList[1] << ":5560\n";
+    
+    std::thread heartbeatThread(monitorGaHeartbeat, std::ref(zmqContext), 
+                         std::ref(ipAddressList[0]), std::ref(ipAddressList[1]));
+    
+    std::cout << "[AD] Ready to process RETURN requests\n\n";
+
+    while(true){
+        zmq::message_t gcRequest;
+        zmq::recv_result_t receiveResult = gcSocket.recv(gcRequest, zmq::recv_flags::none);
+        
+        if(!receiveResult || gcRequest.size() == 0){
+            continue;
+        }
+        
+        Request parsedRequest;
+        memcpy(&parsedRequest, gcRequest.data(), sizeof(Request));
+        
+        std::cout << "[AD] Request received from GC:\n";
+        std::cout << "[AD] Type: RETURN\n";
+        std::cout << "[AD] Book code: " << parsedRequest.code << "\n";
+        std::cout << "[AD] Location: " << int(parsedRequest.location) << "\n";
+
+        std::string gaResponse = sendRequestWithFailover(gcRequest, zmqContext);
+        
+        if(gaResponse == "ERROR"){
+            gaResponse = "Error: Could not process return operation";
+        }
+        
+        std::cout << "[AD] Sending response to GC: " << gaResponse << "\n\n";
+        gcSocket.send(zmq::buffer(gaResponse), zmq::send_flags::none);
+    }
+    
+    isRunning = false;
+    heartbeatThread.join();
+    return 0;
 }
